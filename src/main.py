@@ -1,15 +1,20 @@
+# src/main.py
 from typing import List
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
-
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from src.db import engine, get_db
-from src.models import Base, Book as BookORM, Branch as BranchORM, Faculty as FacultyORM
-from src.models import BranchStock as BranchStockORM, BookFaculty as BookFacultyORM
-
+from src.models import (
+    Base,
+    Book as BookORM,
+    Branch as BranchORM,
+    Faculty as FacultyORM,
+    BranchStock as BranchStockORM,
+    BookFaculty as BookFacultyORM,
+)
 
 app = FastAPI(
     title="BookHouse (PostgreSQL)",
@@ -60,44 +65,141 @@ class BookFacultiesResponse(BaseModel):
 
 
 # ==========================
-# INIT DB + SEED
+# INIT DB + SEED (idempotent)
 # ==========================
 
+
+def _get_branch_by_name(db: Session, name: str) -> BranchORM | None:
+    return db.scalar(select(BranchORM).where(BranchORM.name == name))
+
+
+def _get_book_by_title(db: Session, title: str) -> BookORM | None:
+    return db.scalar(select(BookORM).where(BookORM.title == title))
+
+
+def _get_faculty_by_name(db: Session, name: str) -> FacultyORM | None:
+    return db.scalar(select(FacultyORM).where(FacultyORM.name == name))
+
+
+def _ensure_branch(db: Session, *, name: str, address: str | None) -> BranchORM:
+    branch = _get_branch_by_name(db, name)
+    if branch is None:
+        branch = BranchORM(name=name, address=address)
+        db.add(branch)
+        db.flush()
+    else:
+        # обновляем адрес, если вдруг пустой/устарел
+        if address is not None and branch.address != address:
+            branch.address = address
+            db.flush()
+    return branch
+
+
+def _ensure_book(db: Session, *, title: str, author: str, year: int | None) -> BookORM:
+    book = _get_book_by_title(db, title)
+    if book is None:
+        book = BookORM(title=title, author=author, year=year)
+        db.add(book)
+        db.flush()
+    else:
+        # делаем данные стабильными для тестов
+        changed = False
+        if book.author != author:
+            book.author = author
+            changed = True
+        if book.year != year:
+            book.year = year
+            changed = True
+        if changed:
+            db.flush()
+    return book
+
+
+def _ensure_faculty(db: Session, *, name: str) -> FacultyORM:
+    fac = _get_faculty_by_name(db, name)
+    if fac is None:
+        fac = FacultyORM(name=name)
+        db.add(fac)
+        db.flush()
+    return fac
+
+
+def _ensure_stock(db: Session, *, branch_id: int, book_id: int, copies: int) -> None:
+    row = db.scalar(
+        select(BranchStockORM).where(
+            BranchStockORM.branch_id == branch_id,
+            BranchStockORM.book_id == book_id,
+        )
+    )
+    if row is None:
+        db.add(BranchStockORM(branch_id=branch_id, book_id=book_id, copies=copies))
+    else:
+        if row.copies != copies:
+            row.copies = copies
+
+
+def _ensure_book_faculty(db: Session, *, branch_id: int, book_id: int, faculty_id: int) -> None:
+    row = db.scalar(
+        select(BookFacultyORM).where(
+            BookFacultyORM.branch_id == branch_id,
+            BookFacultyORM.book_id == book_id,
+            BookFacultyORM.faculty_id == faculty_id,
+        )
+    )
+    if row is None:
+        db.add(BookFacultyORM(branch_id=branch_id, book_id=book_id, faculty_id=faculty_id))
+
+
 def seed_data(db: Session) -> None:
-    # если уже есть книги — значит сидили
-    books_cnt = db.scalar(select(func.count(BookORM.id)))
-    if books_cnt and books_cnt > 0:
-        return
+    """
+    Сидирование должно быть:
+    - детерминированным (тесты ожидают конкретные записи)
+    - идемпотентным (можно вызывать много раз без дублей)
+    """
 
-    main_branch = BranchORM(name="Главный филиал", address="ул. Академическая, 1")
-    it_branch = BranchORM(name="ИТ-филиал", address="пр-т Программистов, 42")
-    db.add_all([main_branch, it_branch])
-    db.flush()
+    # просто проверка, что таблицы вообще доступны
+    db.scalar(select(func.count(BookORM.id)))
 
-    book1 = BookORM(title="Алгоритмы: построение и анализ", author="Кормен и др.", year=2009)
-    book2 = BookORM(title="Введение в машинное обучение", author="А. Н. Авторов", year=2020)
-    db.add_all([book1, book2])
-    db.flush()
+    # --- branches (seed + CI required) ---
+    main_branch = _ensure_branch(db, name="Главный филиал", address="ул. Академическая, 1")
+    it_branch = _ensure_branch(db, name="ИТ-филиал", address="пр-т Программистов, 42")
 
-    fac_it = FacultyORM(name="Факультет информационных технологий")
-    fac_math = FacultyORM(name="Математический факультет")
-    db.add_all([fac_it, fac_math])
-    db.flush()
+    ci_branch_one = _ensure_branch(db, name="CI Branch One", address="Test street, 1")
+    ci_branch_two = _ensure_branch(db, name="CI Branch Two", address="Test street, 2")
 
-    # Наличие
-    db.add_all([
-        BranchStockORM(branch_id=main_branch.id, book_id=book1.id, copies=5),
-        BranchStockORM(branch_id=main_branch.id, book_id=book2.id, copies=2),
-        BranchStockORM(branch_id=it_branch.id, book_id=book1.id, copies=3),
-    ])
+    # --- books (seed + CI required) ---
+    book_seed_1 = _ensure_book(
+        db,
+        title="Алгоритмы: построение и анализ",
+        author="Кормен и др.",
+        year=2009,
+    )
+    book_seed_2 = _ensure_book(
+        db,
+        title="Введение в машинное обучение",
+        author="А. Н. Авторов",
+        year=2020,
+    )
 
-    # Использование факультетами
-    db.add_all([
-        BookFacultyORM(branch_id=main_branch.id, book_id=book1.id, faculty_id=fac_it.id),
-        BookFacultyORM(branch_id=main_branch.id, book_id=book1.id, faculty_id=fac_math.id),
-        BookFacultyORM(branch_id=it_branch.id, book_id=book1.id, faculty_id=fac_it.id),
-        BookFacultyORM(branch_id=main_branch.id, book_id=book2.id, faculty_id=fac_math.id),
-    ])
+    ci_book_one = _ensure_book(db, title="CI Book One", author="Test Author", year=2001)
+    ci_book_two = _ensure_book(db, title="CI Book Two", author="Test Author", year=2002)
+
+    # --- faculties ---
+    fac_it = _ensure_faculty(db, name="Факультет информационных технологий")
+    fac_math = _ensure_faculty(db, name="Математический факультет")
+
+    # --- stock (наличие) ---
+    _ensure_stock(db, branch_id=main_branch.id, book_id=book_seed_1.id, copies=5)
+    _ensure_stock(db, branch_id=main_branch.id, book_id=book_seed_2.id, copies=2)
+    _ensure_stock(db, branch_id=it_branch.id, book_id=book_seed_1.id, copies=3)
+
+    # --- book<->faculty usage in branches ---
+    _ensure_book_faculty(db, branch_id=main_branch.id, book_id=book_seed_1.id, faculty_id=fac_it.id)
+    _ensure_book_faculty(db, branch_id=main_branch.id, book_id=book_seed_1.id, faculty_id=fac_math.id)
+    _ensure_book_faculty(db, branch_id=it_branch.id, book_id=book_seed_1.id, faculty_id=fac_it.id)
+    _ensure_book_faculty(db, branch_id=main_branch.id, book_id=book_seed_2.id, faculty_id=fac_math.id)
+
+    # CI entities deliberately have NO special relations/stocks (тесты это не требуют)
 
     db.commit()
 
@@ -105,8 +207,8 @@ def seed_data(db: Session) -> None:
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
-    # сидим через обычную сессию
     from src.db import SessionLocal
+
     db = SessionLocal()
     try:
         seed_data(db)
@@ -118,6 +220,7 @@ def on_startup():
 # HEALTH
 # ==========================
 
+
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
@@ -126,6 +229,7 @@ def health_check():
 # ==========================
 # BOOKS
 # ==========================
+
 
 @app.get("/books", response_model=List[Book])
 def list_books(db: Session = Depends(get_db)):
@@ -170,6 +274,7 @@ def update_book(book_id: int, data: BookBase, db: Session = Depends(get_db)):
 # BRANCHES
 # ==========================
 
+
 @app.get("/branches", response_model=List[Branch])
 def list_branches(db: Session = Depends(get_db)):
     rows = db.scalars(select(BranchORM).order_by(BranchORM.id)).all()
@@ -211,6 +316,7 @@ def update_branch(branch_id: int, data: BranchBase, db: Session = Depends(get_db
 # FACULTIES
 # ==========================
 
+
 @app.get("/faculties", response_model=List[Faculty])
 def list_faculties(db: Session = Depends(get_db)):
     rows = db.scalars(select(FacultyORM).order_by(FacultyORM.id)).all()
@@ -220,6 +326,7 @@ def list_faculties(db: Session = Depends(get_db)):
 # ==========================
 # OPS (ТЗ)
 # ==========================
+
 
 @app.get("/branches/{branch_id}/books/{book_id}/copies", response_model=BranchBookInfo)
 def get_copies_in_branch(branch_id: int, book_id: int, db: Session = Depends(get_db)):
@@ -272,7 +379,13 @@ def add_book_faculty(branch_id: int, book_id: int, faculty_id: int, db: Session 
     if not db.get(FacultyORM, faculty_id):
         raise HTTPException(status_code=404, detail="Факультет не найден")
 
-    exists = db.get(BookFacultyORM, {"branch_id": branch_id, "book_id": book_id, "faculty_id": faculty_id})
+    exists = db.scalar(
+        select(BookFacultyORM).where(
+            BookFacultyORM.branch_id == branch_id,
+            BookFacultyORM.book_id == book_id,
+            BookFacultyORM.faculty_id == faculty_id,
+        )
+    )
     if not exists:
         db.add(BookFacultyORM(branch_id=branch_id, book_id=book_id, faculty_id=faculty_id))
         db.commit()

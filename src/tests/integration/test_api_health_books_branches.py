@@ -1,5 +1,3 @@
-# src/tests/integration/test_api_health_books_branches.py
-
 def test_health(client):
     r = client.get("/health")
     assert r.status_code == 200
@@ -29,22 +27,15 @@ def test_get_book_by_id(client, book1):
 
 
 def test_update_book(client, book1):
-    original = {"title": book1["title"], "author": book1["author"], "year": book1["year"]}
-
     new_payload = {"title": book1["title"] + "-upd", "author": "Upd Author", "year": 2024}
-    try:
-        r = client.put(f"/books/{book1['id']}", json=new_payload)
-        assert r.status_code == 200
+    r = client.put(f"/books/{book1['id']}", json=new_payload)
+    assert r.status_code == 200
 
-        upd = r.json()
-        assert upd["id"] == book1["id"]
-        assert upd["title"] == new_payload["title"]
-        assert upd["author"] == new_payload["author"]
-        assert upd["year"] == new_payload["year"]
-    finally:
-        # Вернём назад, чтобы не ломать другие тесты на сиды/наличие
-        r2 = client.put(f"/books/{book1['id']}", json=original)
-        assert r2.status_code == 200
+    upd = r.json()
+    assert upd["id"] == book1["id"]
+    assert upd["title"] == new_payload["title"]
+    assert upd["author"] == new_payload["author"]
+    assert upd["year"] == new_payload["year"]
 
 
 def test_list_branches_contains_created(client, branch1, branch2):
@@ -66,3 +57,79 @@ def test_get_branch_by_id(client, branch1):
     assert got["id"] == branch1["id"]
     assert got["name"] == branch1["name"]
     assert got["address"] == branch1["address"]
+
+
+# ----- tests for copies/faculties -----
+def test_get_copies_in_branch_existing_pair(client, seeded_ids):
+    r = client.get(f"/branches/{seeded_ids['main_branch_id']}/books/{seeded_ids['book1_id']}/copies")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["branch_id"] == seeded_ids["main_branch_id"]
+    assert body["book_id"] == seeded_ids["book1_id"]
+    assert body["copies"] == 5
+
+
+def test_get_copies_in_branch_missing_pair_returns_zero(client, seeded_ids):
+    r = client.get(f"/branches/{seeded_ids['it_branch_id']}/books/{seeded_ids['book2_id']}/copies")
+    assert r.status_code == 200
+    assert r.json()["copies"] == 0
+
+
+def test_get_copies_branch_404(client, seeded_ids):
+    r = client.get(f"/branches/999999/books/{seeded_ids['book1_id']}/copies")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Филиал не найден"
+
+
+def test_get_copies_book_404(client, seeded_ids):
+    r = client.get(f"/branches/{seeded_ids['main_branch_id']}/books/999999/copies")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Книга не найдена"
+
+
+def test_get_book_faculties_ok(client, seeded_ids):
+    r = client.get(f"/branches/{seeded_ids['main_branch_id']}/books/{seeded_ids['book1_id']}/faculties")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["faculty_count"] == 2
+    assert isinstance(body["faculties"], list)
+    assert {f["name"] for f in body["faculties"]}  # not empty
+
+
+def test_get_book_faculties_for_missing_relation_returns_empty(client, seeded_ids):
+    r = client.get(f"/branches/{seeded_ids['it_branch_id']}/books/{seeded_ids['book2_id']}/faculties")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["faculty_count"] == 0
+    assert body["faculties"] == []
+
+
+def test_add_book_faculty_ok(client, seeded_ids):
+    r = client.post(
+        f"/branches/{seeded_ids['it_branch_id']}/books/{seeded_ids['book1_id']}/faculties/{seeded_ids['fac_math_id']}"
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["faculty_count"] == 2
+
+    r2 = client.get(f"/branches/{seeded_ids['it_branch_id']}/books/{seeded_ids['book1_id']}/faculties")
+    assert r2.status_code == 200
+    assert r2.json()["faculty_count"] == 2
+
+
+def test_add_book_faculty_404_branch(client, seeded_ids):
+    r = client.post(f"/branches/999999/books/{seeded_ids['book1_id']}/faculties/{seeded_ids['fac_it_id']}")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Филиал не найден"
+
+
+def test_add_book_faculty_404_book(client, seeded_ids):
+    r = client.post(f"/branches/{seeded_ids['main_branch_id']}/books/999999/faculties/{seeded_ids['fac_it_id']}")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Книга не найдена"
+
+
+def test_add_book_faculty_404_faculty(client, seeded_ids):
+    r = client.post(f"/branches/{seeded_ids['main_branch_id']}/books/{seeded_ids['book1_id']}/faculties/999999")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Факультет не найден"
