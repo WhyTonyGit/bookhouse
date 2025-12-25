@@ -1,3 +1,4 @@
+# src/tests/integration/test_ops_seeded.py
 import pytest
 
 
@@ -17,10 +18,10 @@ def _require_seed_entity(client, endpoint, field, value):
     return item
 
 
-@pytest.fixture()
+@pytest.fixture(scope="session")
 def seeded_ids(client):
     """
-    Берём id-шники по данным, которые ты сидишь в seed_data().
+    Берём id-шники по данным, которые сидятся в seed_data().
     Если этих записей нет — тест падает с понятным сообщением (а не рандомом).
     """
     # branches

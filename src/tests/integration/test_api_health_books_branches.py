@@ -1,3 +1,5 @@
+# src/tests/integration/test_api_health_books_branches.py
+
 def test_health(client):
     r = client.get("/health")
     assert r.status_code == 200
@@ -27,15 +29,22 @@ def test_get_book_by_id(client, book1):
 
 
 def test_update_book(client, book1):
-    new_payload = {"title": book1["title"] + "-upd", "author": "Upd Author", "year": 2024}
-    r = client.put(f"/books/{book1['id']}", json=new_payload)
-    assert r.status_code == 200
+    original = {"title": book1["title"], "author": book1["author"], "year": book1["year"]}
 
-    upd = r.json()
-    assert upd["id"] == book1["id"]
-    assert upd["title"] == new_payload["title"]
-    assert upd["author"] == new_payload["author"]
-    assert upd["year"] == new_payload["year"]
+    new_payload = {"title": book1["title"] + "-upd", "author": "Upd Author", "year": 2024}
+    try:
+        r = client.put(f"/books/{book1['id']}", json=new_payload)
+        assert r.status_code == 200
+
+        upd = r.json()
+        assert upd["id"] == book1["id"]
+        assert upd["title"] == new_payload["title"]
+        assert upd["author"] == new_payload["author"]
+        assert upd["year"] == new_payload["year"]
+    finally:
+        # Вернём назад, чтобы не ломать другие тесты на сиды/наличие
+        r2 = client.put(f"/books/{book1['id']}", json=original)
+        assert r2.status_code == 200
 
 
 def test_list_branches_contains_created(client, branch1, branch2):
