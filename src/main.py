@@ -16,6 +16,36 @@ from src.models import (
     BookFaculty as BookFacultyORM,
 )
 
+# ============================================================
+# Unit-test compatibility (src/tests/unit/test_ids_and_seed.py)
+# They import `main` and expect these symbols to exist.
+# PYTHONPATH in CI includes "$PWD:$PWD/src", so `import main`
+# resolves to this file.
+# ============================================================
+
+book_id_seq = 0
+branch_id_seq = 0
+faculty_id_seq = 0
+
+
+def get_next_book_id() -> int:
+    global book_id_seq
+    book_id_seq += 1
+    return book_id_seq
+
+
+def get_next_branch_id() -> int:
+    global branch_id_seq
+    branch_id_seq += 1
+    return branch_id_seq
+
+
+def get_next_faculty_id() -> int:
+    global faculty_id_seq
+    faculty_id_seq += 1
+    return faculty_id_seq
+
+
 app = FastAPI(
     title="BookHouse (PostgreSQL)",
     description="Учебное приложение библиотеки с PostgreSQL.",
@@ -88,7 +118,6 @@ def _ensure_branch(db: Session, *, name: str, address: str | None) -> BranchORM:
         db.add(branch)
         db.flush()
     else:
-        # обновляем адрес, если вдруг пустой/устарел
         if address is not None and branch.address != address:
             branch.address = address
             db.flush()
@@ -102,7 +131,6 @@ def _ensure_book(db: Session, *, title: str, author: str, year: int | None) -> B
         db.add(book)
         db.flush()
     else:
-        # делаем данные стабильными для тестов
         changed = False
         if book.author != author:
             book.author = author
@@ -152,20 +180,20 @@ def _ensure_book_faculty(db: Session, *, branch_id: int, book_id: int, faculty_i
 
 def seed_data(db: Session) -> None:
     """
-    Сидирование должно быть:
-    - детерминированным (тесты ожидают конкретные записи)
-    - идемпотентным (можно вызывать много раз без дублей)
+    Сидирование:
+    - детерминированное (тесты ожидают конкретные записи)
+    - идемпотентное (можно вызывать много раз без дублей)
     """
 
-    # просто проверка, что таблицы вообще доступны
+    # sanity: доступ к таблицам
     db.scalar(select(func.count(BookORM.id)))
 
     # --- branches (seed + CI required) ---
     main_branch = _ensure_branch(db, name="Главный филиал", address="ул. Академическая, 1")
     it_branch = _ensure_branch(db, name="ИТ-филиал", address="пр-т Программистов, 42")
 
-    ci_branch_one = _ensure_branch(db, name="CI Branch One", address="Test street, 1")
-    ci_branch_two = _ensure_branch(db, name="CI Branch Two", address="Test street, 2")
+    _ensure_branch(db, name="CI Branch One", address="Test street, 1")
+    _ensure_branch(db, name="CI Branch Two", address="Test street, 2")
 
     # --- books (seed + CI required) ---
     book_seed_1 = _ensure_book(
@@ -181,8 +209,8 @@ def seed_data(db: Session) -> None:
         year=2020,
     )
 
-    ci_book_one = _ensure_book(db, title="CI Book One", author="Test Author", year=2001)
-    ci_book_two = _ensure_book(db, title="CI Book Two", author="Test Author", year=2002)
+    _ensure_book(db, title="CI Book One", author="Test Author", year=2001)
+    _ensure_book(db, title="CI Book Two", author="Test Author", year=2002)
 
     # --- faculties ---
     fac_it = _ensure_faculty(db, name="Факультет информационных технологий")
@@ -193,13 +221,11 @@ def seed_data(db: Session) -> None:
     _ensure_stock(db, branch_id=main_branch.id, book_id=book_seed_2.id, copies=2)
     _ensure_stock(db, branch_id=it_branch.id, book_id=book_seed_1.id, copies=3)
 
-    # --- book<->faculty usage in branches ---
+    # --- relations book<->faculty in branches ---
     _ensure_book_faculty(db, branch_id=main_branch.id, book_id=book_seed_1.id, faculty_id=fac_it.id)
     _ensure_book_faculty(db, branch_id=main_branch.id, book_id=book_seed_1.id, faculty_id=fac_math.id)
     _ensure_book_faculty(db, branch_id=it_branch.id, book_id=book_seed_1.id, faculty_id=fac_it.id)
     _ensure_book_faculty(db, branch_id=main_branch.id, book_id=book_seed_2.id, faculty_id=fac_math.id)
-
-    # CI entities deliberately have NO special relations/stocks (тесты это не требуют)
 
     db.commit()
 
