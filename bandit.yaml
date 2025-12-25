@@ -1,0 +1,12 @@
+exclude_dirs:
+  - .venv
+  - venv
+  - env
+  - .env
+  - __pycache__
+  - tests
+  - build
+  - dist
+
+severity: HIGH
+confidence: HIGH
