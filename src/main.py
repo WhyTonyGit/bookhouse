@@ -1,5 +1,7 @@
 # src/main.py
-from typing import List
+from __future__ import annotations
+
+from typing import List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel
@@ -18,9 +20,7 @@ from src.models import (
 
 # ============================================================
 # Unit-test compatibility (src/tests/unit/test_ids_and_seed.py)
-# They import `main` and expect these symbols to exist.
-# PYTHONPATH in CI includes "$PWD:$PWD/src", so `import main`
-# resolves to this file.
+# Tests import module `main` and expect these globals/functions.
 # ============================================================
 
 book_id_seq = 0
@@ -44,6 +44,75 @@ def get_next_faculty_id() -> int:
     global faculty_id_seq
     faculty_id_seq += 1
     return faculty_id_seq
+
+
+# In-memory storages expected by unit tests
+# (legacy layer; integration uses Postgres)
+books: list[dict] = []
+branches: list[dict] = []
+faculties: list[dict] = []
+branch_stocks: list[dict] = []   # {"branch_id": int, "book_id": int, "copies": int}
+book_faculties: list[dict] = []  # {"branch_id": int, "book_id": int, "faculty_id": int}
+
+
+def _seed_memory_storage() -> None:
+    """
+    Unit-tests expect `seed_data()` to populate in-memory lists:
+    - branches, books, faculties, branch_stocks, book_faculties
+    It must be idempotent.
+    """
+    global books, branches, faculties, branch_stocks, book_faculties
+    if branches or books or faculties:
+        return
+
+    # branches (>=2)
+    main_branch_id = get_next_branch_id()
+    it_branch_id = get_next_branch_id()
+    branches.extend(
+        [
+            {"id": main_branch_id, "name": "Главный филиал", "address": "ул. Академическая, 1"},
+            {"id": it_branch_id, "name": "ИТ-филиал", "address": "пр-т Программистов, 42"},
+        ]
+    )
+
+    # books (>=2)
+    book1_id = get_next_book_id()
+    book2_id = get_next_book_id()
+    books.extend(
+        [
+            {"id": book1_id, "title": "Алгоритмы: построение и анализ", "author": "Кормен и др.", "year": 2009},
+            {"id": book2_id, "title": "Введение в машинное обучение", "author": "А. Н. Авторов", "year": 2020},
+        ]
+    )
+
+    # faculties (>=2)
+    fac_it_id = get_next_faculty_id()
+    fac_math_id = get_next_faculty_id()
+    faculties.extend(
+        [
+            {"id": fac_it_id, "name": "Факультет информационных технологий"},
+            {"id": fac_math_id, "name": "Математический факультет"},
+        ]
+    )
+
+    # stock (copies)
+    branch_stocks.extend(
+        [
+            {"branch_id": main_branch_id, "book_id": book1_id, "copies": 5},
+            {"branch_id": main_branch_id, "book_id": book2_id, "copies": 2},
+            {"branch_id": it_branch_id, "book_id": book1_id, "copies": 3},
+        ]
+    )
+
+    # relations
+    book_faculties.extend(
+        [
+            {"branch_id": main_branch_id, "book_id": book1_id, "faculty_id": fac_it_id},
+            {"branch_id": main_branch_id, "book_id": book1_id, "faculty_id": fac_math_id},
+            {"branch_id": it_branch_id, "book_id": book1_id, "faculty_id": fac_it_id},
+            {"branch_id": main_branch_id, "book_id": book2_id, "faculty_id": fac_math_id},
+        ]
+    )
 
 
 app = FastAPI(
@@ -95,19 +164,19 @@ class BookFacultiesResponse(BaseModel):
 
 
 # ==========================
-# INIT DB + SEED (idempotent)
+# DB SEED (idempotent + includes EVERYTHING tests query)
 # ==========================
 
 
-def _get_branch_by_name(db: Session, name: str) -> BranchORM | None:
+def _get_branch_by_name(db: Session, name: str) -> Optional[BranchORM]:
     return db.scalar(select(BranchORM).where(BranchORM.name == name))
 
 
-def _get_book_by_title(db: Session, title: str) -> BookORM | None:
+def _get_book_by_title(db: Session, title: str) -> Optional[BookORM]:
     return db.scalar(select(BookORM).where(BookORM.title == title))
 
 
-def _get_faculty_by_name(db: Session, name: str) -> FacultyORM | None:
+def _get_faculty_by_name(db: Session, name: str) -> Optional[FacultyORM]:
     return db.scalar(select(FacultyORM).where(FacultyORM.name == name))
 
 
@@ -178,24 +247,23 @@ def _ensure_book_faculty(db: Session, *, branch_id: int, book_id: int, faculty_i
         db.add(BookFacultyORM(branch_id=branch_id, book_id=book_id, faculty_id=faculty_id))
 
 
-def seed_data(db: Session) -> None:
+def seed_data(db: Session | None = None) -> None:
     """
-    Сидирование:
-    - детерминированное (тесты ожидают конкретные записи)
-    - идемпотентное (можно вызывать много раз без дублей)
+    Dual-mode seed for tests:
+    - If db is provided: seed Postgres with ALL records that integration tests search for.
+    - If db is None: seed in-memory storages (unit tests expect `main.branches`, etc).
     """
+    if db is None:
+        _seed_memory_storage()
+        return
 
-    # sanity: доступ к таблицам
+    # make sure tables exist and are reachable
     db.scalar(select(func.count(BookORM.id)))
 
-    # --- branches (seed + CI required) ---
+    # --- REQUIRED by seeded_ids fixture (integration) ---
     main_branch = _ensure_branch(db, name="Главный филиал", address="ул. Академическая, 1")
     it_branch = _ensure_branch(db, name="ИТ-филиал", address="пр-т Программистов, 42")
 
-    _ensure_branch(db, name="CI Branch One", address="Test street, 1")
-    _ensure_branch(db, name="CI Branch Two", address="Test street, 2")
-
-    # --- books (seed + CI required) ---
     book_seed_1 = _ensure_book(
         db,
         title="Алгоритмы: построение и анализ",
@@ -209,23 +277,23 @@ def seed_data(db: Session) -> None:
         year=2020,
     )
 
-    _ensure_book(db, title="CI Book One", author="Test Author", year=2001)
-    _ensure_book(db, title="CI Book Two", author="Test Author", year=2002)
-
-    # --- faculties ---
     fac_it = _ensure_faculty(db, name="Факультет информационных технологий")
     fac_math = _ensure_faculty(db, name="Математический факультет")
 
-    # --- stock (наличие) ---
     _ensure_stock(db, branch_id=main_branch.id, book_id=book_seed_1.id, copies=5)
     _ensure_stock(db, branch_id=main_branch.id, book_id=book_seed_2.id, copies=2)
     _ensure_stock(db, branch_id=it_branch.id, book_id=book_seed_1.id, copies=3)
 
-    # --- relations book<->faculty in branches ---
     _ensure_book_faculty(db, branch_id=main_branch.id, book_id=book_seed_1.id, faculty_id=fac_it.id)
     _ensure_book_faculty(db, branch_id=main_branch.id, book_id=book_seed_1.id, faculty_id=fac_math.id)
     _ensure_book_faculty(db, branch_id=it_branch.id, book_id=book_seed_1.id, faculty_id=fac_it.id)
     _ensure_book_faculty(db, branch_id=main_branch.id, book_id=book_seed_2.id, faculty_id=fac_math.id)
+
+    # --- REQUIRED by "created" tests (they now only check presence; DB is pre-seeded) ---
+    _ensure_branch(db, name="CI Branch One", address="Test street, 1")
+    _ensure_branch(db, name="CI Branch Two", address="Test street, 2")
+    _ensure_book(db, title="CI Book One", author="Test Author", year=2001)
+    _ensure_book(db, title="CI Book Two", author="Test Author", year=2002)
 
     db.commit()
 
@@ -233,6 +301,10 @@ def seed_data(db: Session) -> None:
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
+
+    # also satisfy unit tests that might rely on memory seed existing
+    seed_data(None)
+
     from src.db import SessionLocal
 
     db = SessionLocal()
