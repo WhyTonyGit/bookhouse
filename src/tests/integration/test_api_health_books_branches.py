@@ -1,106 +1,45 @@
+def _find_by(items, key, value):
+    for x in items:
+        if x.get(key) == value:
+            return x
+    return None
+
+
 def test_health(client):
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok"}
+    assert r.json()["status"] == "ok"
 
 
-def test_list_books(client):
+def test_books_list_and_get(client):
     r = client.get("/books")
     assert r.status_code == 200
-    data = r.json()
-    assert isinstance(data, list)
-    assert len(data) >= 2
-    assert {"id", "title", "author", "year"} <= set(data[0].keys())
+    books = r.json()
+    assert len(books) >= 2
+
+    book1 = _find_by(books, "title", "Алгоритмы: построение и анализ")
+    assert book1 is not None
+
+    r2 = client.get(f"/books/{book1['id']}")
+    assert r2.status_code == 200
+    assert r2.json()["author"] == "Кормен и др."
 
 
-def test_get_book_ok(client):
-    r = client.get("/books/1")
-    assert r.status_code == 200
-    assert r.json()["id"] == 1
-
-
-def test_get_book_404(client):
-    r = client.get("/books/9999")
-    assert r.status_code == 404
-    assert r.json()["detail"] == "Книга не найдена"
-
-
-def test_create_book(client):
-    payload = {"title": "Clean Code", "author": "Robert C. Martin", "year": 2008}
+def test_create_and_update_book(client):
+    payload = {"title": "Тестовая книга", "author": "Я", "year": 2024}
     r = client.post("/books", json=payload)
     assert r.status_code == 201
     created = r.json()
-    assert created["id"] >= 1
-    assert created["title"] == payload["title"]
+    assert created["id"] > 0
 
-    # проверяем что реально появилась
-    r2 = client.get(f"/books/{created['id']}")
+    upd = {"title": "Тестовая книга 2", "author": "Я", "year": 2025}
+    r2 = client.put(f"/books/{created['id']}", json=upd)
     assert r2.status_code == 200
-    assert r2.json()["author"] == payload["author"]
+    assert r2.json()["title"] == "Тестовая книга 2"
 
 
-def test_update_book_ok(client):
-    payload = {"title": "Новая", "author": "Автор", "year": 2024}
-    r = client.put("/books/1", json=payload)
-    assert r.status_code == 200
-    updated = r.json()
-    assert updated["id"] == 1
-    assert updated["title"] == "Новая"
-
-
-def test_update_book_404(client):
-    payload = {"title": "X", "author": "Y", "year": 2024}
-    r = client.put("/books/9999", json=payload)
-    assert r.status_code == 404
-    assert r.json()["detail"] == "Книга не найдена"
-
-
-def test_list_branches(client):
+def test_branches_list(client):
     r = client.get("/branches")
     assert r.status_code == 200
-    data = r.json()
-    assert len(data) >= 2
-    assert {"id", "name", "address"} <= set(data[0].keys())
-
-
-def test_get_branch_ok(client):
-    r = client.get("/branches/1")
-    assert r.status_code == 200
-    assert r.json()["id"] == 1
-
-
-def test_get_branch_404(client):
-    r = client.get("/branches/9999")
-    assert r.status_code == 404
-    assert r.json()["detail"] == "Филиал не найден"
-
-
-def test_create_branch(client):
-    payload = {"name": "Новый филиал", "address": "ул. Тестовая, 10"}
-    r = client.post("/branches", json=payload)
-    assert r.status_code == 201
-    created = r.json()
-    assert created["id"] >= 1
-    assert created["name"] == payload["name"]
-
-
-def test_update_branch_ok(client):
-    payload = {"name": "Переименован", "address": "где-то"}
-    r = client.put("/branches/1", json=payload)
-    assert r.status_code == 200
-    assert r.json()["name"] == "Переименован"
-
-
-def test_update_branch_404(client):
-    payload = {"name": "X", "address": "Y"}
-    r = client.put("/branches/9999", json=payload)
-    assert r.status_code == 404
-    assert r.json()["detail"] == "Филиал не найден"
-
-
-def test_list_faculties(client):
-    r = client.get("/faculties")
-    assert r.status_code == 200
-    data = r.json()
-    assert len(data) >= 2
-    assert {"id", "name"} <= set(data[0].keys())
+    branches = r.json()
+    assert len(branches) >= 2

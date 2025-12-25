@@ -1,2 +1,6 @@
+-r requirements.txt
 flake8
 bandit
+pytest
+pytest-cov
+httpx
