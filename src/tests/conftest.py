@@ -1,27 +1,53 @@
-# src/tests/conftest.py
 import os
+import uuid
+
 import pytest
 from fastapi.testclient import TestClient
 
 from src.main import app
-from src.db import Base, get_engine
 
-def _db_url() -> str:
-    return os.getenv(
-        "DATABASE_URL",
-        "postgresql+psycopg://postgres:postgres@localhost:5432/bookhouse",
-    )
 
-@pytest.fixture(scope="session")
-def engine():
-    return get_engine(_db_url())
+def _unique(prefix: str) -> str:
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
-@pytest.fixture(scope="session", autouse=True)
-def create_test_schema(engine):
-    Base.metadata.create_all(bind=engine)
-    yield
-    Base.metadata.drop_all(bind=engine)
+
+@pytest.fixture(scope="function")
+def client():
+    # Жёстко валимся, если забыли переменную окружения
+    assert os.getenv("DATABASE_URL"), "DATABASE_URL is not set (CI should export it before pytest)"
+
+    # Важно: context manager => гарантированно отрабатывает startup (create_all + seed если он есть)
+    with TestClient(app) as c:
+        yield c
+
 
 @pytest.fixture()
-def client():
-    return TestClient(app)
+def book1(client):
+    payload = {"title": _unique("book-one"), "author": "Test Author", "year": 2001}
+    r = client.post("/books", json=payload)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+@pytest.fixture()
+def book2(client):
+    payload = {"title": _unique("book-two"), "author": "Test Author", "year": 2002}
+    r = client.post("/books", json=payload)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+@pytest.fixture()
+def branch1(client):
+    payload = {"name": _unique("branch-one"), "address": "Test street, 1"}
+    r = client.post("/branches", json=payload)
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+@pytest.fixture()
+def branch2(client):
+    payload = {"name": _unique("branch-two"), "address": "Test street, 2"}
+    r = client.post("/branches", json=payload)
+    assert r.status_code == 201, r.text
+    return r.json()
