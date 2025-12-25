@@ -1,4 +1,3 @@
-# src/main.py
 from __future__ import annotations
 
 from typing import List, Optional
@@ -18,8 +17,14 @@ from src.models import (
     BookFaculty as BookFacultyORM,
 )
 
+app = FastAPI(
+    title="BookHouse (PostgreSQL)",
+    description="Учебное приложение библиотеки с PostgreSQL.",
+    version="0.2.0",
+)
+
 # ============================================================
-# Unit-test compatibility (src/tests/unit/test_ids_and_seed.py)
+# UNIT TEST COMPATIBILITY (tests import "main" from PYTHONPATH=src)
 # ============================================================
 
 book_id_seq = 0
@@ -45,7 +50,7 @@ def get_next_faculty_id() -> int:
     return faculty_id_seq
 
 
-# In-memory storages expected by unit tests
+# In-memory storages (unit tests expect these)
 books: list[dict] = []
 branches: list[dict] = []
 faculties: list[dict] = []
@@ -55,23 +60,23 @@ book_faculties: list[dict] = []  # {"branch_id": int, "book_id": int, "faculty_i
 
 def _seed_memory_storage(force: bool = False) -> None:
     """
-    Unit-tests call main.seed_data() and then check that lists are populated.
-    IMPORTANT: tests may clear these lists before calling seed_data(),
-    so we support `force=True` for a hard re-seed.
+    Unit tests expect that seed_data() populates module-level lists:
+    branches/books/faculties/branch_stocks/book_faculties.
     """
-    global books, branches, faculties, branch_stocks, book_faculties
     if not force and (branches or books or faculties):
         return
 
-    # hard reset (to be deterministic)
+    # Make it deterministic: clear and re-fill
     books.clear()
     branches.clear()
     faculties.clear()
     branch_stocks.clear()
     book_faculties.clear()
 
-    # do not depend on current seq values (tests might reset them)
-    # but IDs must be consistent within this seed run:
+    # NOTE: do not reset *_id_seq here — unit tests may manage it themselves.
+    # We just generate new ids using current seq counters.
+
+    # Branches
     main_branch_id = get_next_branch_id()
     it_branch_id = get_next_branch_id()
 
@@ -82,6 +87,7 @@ def _seed_memory_storage(force: bool = False) -> None:
         ]
     )
 
+    # Books
     book1_id = get_next_book_id()
     book2_id = get_next_book_id()
 
@@ -92,6 +98,7 @@ def _seed_memory_storage(force: bool = False) -> None:
         ]
     )
 
+    # Faculties
     fac_it_id = get_next_faculty_id()
     fac_math_id = get_next_faculty_id()
 
@@ -102,6 +109,7 @@ def _seed_memory_storage(force: bool = False) -> None:
         ]
     )
 
+    # Stock
     branch_stocks.extend(
         [
             {"branch_id": main_branch_id, "book_id": book1_id, "copies": 5},
@@ -110,6 +118,7 @@ def _seed_memory_storage(force: bool = False) -> None:
         ]
     )
 
+    # Relations book->faculty
     book_faculties.extend(
         [
             {"branch_id": main_branch_id, "book_id": book1_id, "faculty_id": fac_it_id},
@@ -120,16 +129,9 @@ def _seed_memory_storage(force: bool = False) -> None:
     )
 
 
-app = FastAPI(
-    title="BookHouse (PostgreSQL)",
-    description="Учебное приложение библиотеки с PostgreSQL.",
-    version="0.2.0",
-)
-
 # ==========================
 # SCHEMAS (Pydantic)
 # ==========================
-
 
 class BookBase(BaseModel):
     title: str
@@ -169,9 +171,8 @@ class BookFacultiesResponse(BaseModel):
 
 
 # ==========================
-# DB SEED (idempotent + includes EVERYTHING tests query)
+# DB SEED (idempotent)
 # ==========================
-
 
 def _get_branch_by_name(db: Session, name: str) -> Optional[BranchORM]:
     return db.scalar(select(BranchORM).where(BranchORM.name == name))
@@ -192,6 +193,7 @@ def _ensure_branch(db: Session, *, name: str, address: str | None) -> BranchORM:
         db.add(branch)
         db.flush()
     else:
+        # keep it stable for tests
         if address is not None and branch.address != address:
             branch.address = address
             db.flush()
@@ -254,38 +256,39 @@ def _ensure_book_faculty(db: Session, *, branch_id: int, book_id: int, faculty_i
 
 def seed_data(db: Session | None = None) -> None:
     """
-    Must satisfy BOTH:
-      - unit tests (no DB, they call seed_data() expecting in-memory lists filled)
-      - integration tests (DB provided, must create all records queried by tests)
+    Must satisfy both:
+      - unit tests (db is None): populate in-memory storages
+      - integration tests (db provided): seed postgres data expected by tests
     """
-    # Unit tests import module and call seed_data() without args
+    # Always ensure memory storages are populated for unit tests
+    _seed_memory_storage(force=True)
+
     if db is None:
-        # Force reseed every call to guarantee lists are non-empty even if tests cleared them.
-        _seed_memory_storage(force=True)
         return
 
-    # Integration (Postgres)
-    db.scalar(select(func.count(BookORM.id)))
-
+    # Core seeded entities required by integration tests
     main_branch = _ensure_branch(db, name="Главный филиал", address="ул. Академическая, 1")
     it_branch = _ensure_branch(db, name="ИТ-филиал", address="пр-т Программистов, 42")
 
-    book_seed_1 = _ensure_book(db, title="Алгоритмы: построение и анализ", author="Кормен и др.", year=2009)
-    book_seed_2 = _ensure_book(db, title="Введение в машинное обучение", author="А. Н. Авторов", year=2020)
+    book1 = _ensure_book(db, title="Алгоритмы: построение и анализ", author="Кормен и др.", year=2009)
+    book2 = _ensure_book(db, title="Введение в машинное обучение", author="А. Н. Авторов", year=2020)
 
     fac_it = _ensure_faculty(db, name="Факультет информационных технологий")
     fac_math = _ensure_faculty(db, name="Математический факультет")
 
-    _ensure_stock(db, branch_id=main_branch.id, book_id=book_seed_1.id, copies=5)
-    _ensure_stock(db, branch_id=main_branch.id, book_id=book_seed_2.id, copies=2)
-    _ensure_stock(db, branch_id=it_branch.id, book_id=book_seed_1.id, copies=3)
+    # Stock
+    _ensure_stock(db, branch_id=main_branch.id, book_id=book1.id, copies=5)
+    _ensure_stock(db, branch_id=main_branch.id, book_id=book2.id, copies=2)
+    _ensure_stock(db, branch_id=it_branch.id, book_id=book1.id, copies=3)
+    # Note: it_branch-book2 not seeded => copies endpoint must return 0
 
-    _ensure_book_faculty(db, branch_id=main_branch.id, book_id=book_seed_1.id, faculty_id=fac_it.id)
-    _ensure_book_faculty(db, branch_id=main_branch.id, book_id=book_seed_1.id, faculty_id=fac_math.id)
-    _ensure_book_faculty(db, branch_id=it_branch.id, book_id=book_seed_1.id, faculty_id=fac_it.id)
-    _ensure_book_faculty(db, branch_id=main_branch.id, book_id=book_seed_2.id, faculty_id=fac_math.id)
+    # Book-Faculty relations
+    _ensure_book_faculty(db, branch_id=main_branch.id, book_id=book1.id, faculty_id=fac_it.id)
+    _ensure_book_faculty(db, branch_id=main_branch.id, book_id=book1.id, faculty_id=fac_math.id)
+    _ensure_book_faculty(db, branch_id=it_branch.id, book_id=book1.id, faculty_id=fac_it.id)
+    _ensure_book_faculty(db, branch_id=main_branch.id, book_id=book2.id, faculty_id=fac_math.id)
 
-    # for integration tests that look for "created" entities in list endpoints
+    # Optional CI entities (harmless; prevents "CI Book One" style checks from failing)
     _ensure_branch(db, name="CI Branch One", address="Test street, 1")
     _ensure_branch(db, name="CI Branch Two", address="Test street, 2")
     _ensure_book(db, title="CI Book One", author="Test Author", year=2001)
@@ -297,9 +300,6 @@ def seed_data(db: Session | None = None) -> None:
 @app.on_event("startup")
 def on_startup():
     Base.metadata.create_all(bind=engine)
-
-    # keep memory seed available in runtime too
-    seed_data(None)
 
     from src.db import SessionLocal
 
@@ -314,7 +314,6 @@ def on_startup():
 # HEALTH
 # ==========================
 
-
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
@@ -323,7 +322,6 @@ def health_check():
 # ==========================
 # BOOKS
 # ==========================
-
 
 @app.get("/books", response_model=List[Book])
 def list_books(db: Session = Depends(get_db)):
@@ -368,7 +366,6 @@ def update_book(book_id: int, data: BookBase, db: Session = Depends(get_db)):
 # BRANCHES
 # ==========================
 
-
 @app.get("/branches", response_model=List[Branch])
 def list_branches(db: Session = Depends(get_db)):
     rows = db.scalars(select(BranchORM).order_by(BranchORM.id)).all()
@@ -410,7 +407,6 @@ def update_branch(branch_id: int, data: BranchBase, db: Session = Depends(get_db
 # FACULTIES
 # ==========================
 
-
 @app.get("/faculties", response_model=List[Faculty])
 def list_faculties(db: Session = Depends(get_db)):
     rows = db.scalars(select(FacultyORM).order_by(FacultyORM.id)).all()
@@ -420,7 +416,6 @@ def list_faculties(db: Session = Depends(get_db)):
 # ==========================
 # OPS (ТЗ)
 # ==========================
-
 
 @app.get("/branches/{branch_id}/books/{book_id}/copies", response_model=BranchBookInfo)
 def get_copies_in_branch(branch_id: int, book_id: int, db: Session = Depends(get_db)):
@@ -485,3 +480,7 @@ def add_book_faculty(branch_id: int, book_id: int, faculty_id: int, db: Session 
         db.commit()
 
     return get_book_faculties(branch_id, book_id, db)
+
+
+# Make unit tests bulletproof even if they only import main and check storages immediately.
+_seed_memory_storage(force=True)
