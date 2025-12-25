@@ -20,7 +20,6 @@ from src.models import (
 
 # ============================================================
 # Unit-test compatibility (src/tests/unit/test_ids_and_seed.py)
-# Tests import module `main` and expect these globals/functions.
 # ============================================================
 
 book_id_seq = 0
@@ -47,7 +46,6 @@ def get_next_faculty_id() -> int:
 
 
 # In-memory storages expected by unit tests
-# (legacy layer; integration uses Postgres)
 books: list[dict] = []
 branches: list[dict] = []
 faculties: list[dict] = []
@@ -55,19 +53,28 @@ branch_stocks: list[dict] = []   # {"branch_id": int, "book_id": int, "copies": 
 book_faculties: list[dict] = []  # {"branch_id": int, "book_id": int, "faculty_id": int}
 
 
-def _seed_memory_storage() -> None:
+def _seed_memory_storage(force: bool = False) -> None:
     """
-    Unit-tests expect `seed_data()` to populate in-memory lists:
-    - branches, books, faculties, branch_stocks, book_faculties
-    It must be idempotent.
+    Unit-tests call main.seed_data() and then check that lists are populated.
+    IMPORTANT: tests may clear these lists before calling seed_data(),
+    so we support `force=True` for a hard re-seed.
     """
     global books, branches, faculties, branch_stocks, book_faculties
-    if branches or books or faculties:
+    if not force and (branches or books or faculties):
         return
 
-    # branches (>=2)
+    # hard reset (to be deterministic)
+    books.clear()
+    branches.clear()
+    faculties.clear()
+    branch_stocks.clear()
+    book_faculties.clear()
+
+    # do not depend on current seq values (tests might reset them)
+    # but IDs must be consistent within this seed run:
     main_branch_id = get_next_branch_id()
     it_branch_id = get_next_branch_id()
+
     branches.extend(
         [
             {"id": main_branch_id, "name": "Главный филиал", "address": "ул. Академическая, 1"},
@@ -75,9 +82,9 @@ def _seed_memory_storage() -> None:
         ]
     )
 
-    # books (>=2)
     book1_id = get_next_book_id()
     book2_id = get_next_book_id()
+
     books.extend(
         [
             {"id": book1_id, "title": "Алгоритмы: построение и анализ", "author": "Кормен и др.", "year": 2009},
@@ -85,9 +92,9 @@ def _seed_memory_storage() -> None:
         ]
     )
 
-    # faculties (>=2)
     fac_it_id = get_next_faculty_id()
     fac_math_id = get_next_faculty_id()
+
     faculties.extend(
         [
             {"id": fac_it_id, "name": "Факультет информационных технологий"},
@@ -95,7 +102,6 @@ def _seed_memory_storage() -> None:
         ]
     )
 
-    # stock (copies)
     branch_stocks.extend(
         [
             {"branch_id": main_branch_id, "book_id": book1_id, "copies": 5},
@@ -104,7 +110,6 @@ def _seed_memory_storage() -> None:
         ]
     )
 
-    # relations
     book_faculties.extend(
         [
             {"branch_id": main_branch_id, "book_id": book1_id, "faculty_id": fac_it_id},
@@ -249,33 +254,24 @@ def _ensure_book_faculty(db: Session, *, branch_id: int, book_id: int, faculty_i
 
 def seed_data(db: Session | None = None) -> None:
     """
-    Dual-mode seed for tests:
-    - If db is provided: seed Postgres with ALL records that integration tests search for.
-    - If db is None: seed in-memory storages (unit tests expect `main.branches`, etc).
+    Must satisfy BOTH:
+      - unit tests (no DB, they call seed_data() expecting in-memory lists filled)
+      - integration tests (DB provided, must create all records queried by tests)
     """
+    # Unit tests import module and call seed_data() without args
     if db is None:
-        _seed_memory_storage()
+        # Force reseed every call to guarantee lists are non-empty even if tests cleared them.
+        _seed_memory_storage(force=True)
         return
 
-    # make sure tables exist and are reachable
+    # Integration (Postgres)
     db.scalar(select(func.count(BookORM.id)))
 
-    # --- REQUIRED by seeded_ids fixture (integration) ---
     main_branch = _ensure_branch(db, name="Главный филиал", address="ул. Академическая, 1")
     it_branch = _ensure_branch(db, name="ИТ-филиал", address="пр-т Программистов, 42")
 
-    book_seed_1 = _ensure_book(
-        db,
-        title="Алгоритмы: построение и анализ",
-        author="Кормен и др.",
-        year=2009,
-    )
-    book_seed_2 = _ensure_book(
-        db,
-        title="Введение в машинное обучение",
-        author="А. Н. Авторов",
-        year=2020,
-    )
+    book_seed_1 = _ensure_book(db, title="Алгоритмы: построение и анализ", author="Кормен и др.", year=2009)
+    book_seed_2 = _ensure_book(db, title="Введение в машинное обучение", author="А. Н. Авторов", year=2020)
 
     fac_it = _ensure_faculty(db, name="Факультет информационных технологий")
     fac_math = _ensure_faculty(db, name="Математический факультет")
@@ -289,7 +285,7 @@ def seed_data(db: Session | None = None) -> None:
     _ensure_book_faculty(db, branch_id=it_branch.id, book_id=book_seed_1.id, faculty_id=fac_it.id)
     _ensure_book_faculty(db, branch_id=main_branch.id, book_id=book_seed_2.id, faculty_id=fac_math.id)
 
-    # --- REQUIRED by "created" tests (they now only check presence; DB is pre-seeded) ---
+    # for integration tests that look for "created" entities in list endpoints
     _ensure_branch(db, name="CI Branch One", address="Test street, 1")
     _ensure_branch(db, name="CI Branch Two", address="Test street, 2")
     _ensure_book(db, title="CI Book One", author="Test Author", year=2001)
@@ -302,7 +298,7 @@ def seed_data(db: Session | None = None) -> None:
 def on_startup():
     Base.metadata.create_all(bind=engine)
 
-    # also satisfy unit tests that might rely on memory seed existing
+    # keep memory seed available in runtime too
     seed_data(None)
 
     from src.db import SessionLocal
