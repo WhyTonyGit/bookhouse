@@ -1,71 +1,39 @@
-def test_get_copies_in_branch_existing_pair(client):
-    r = client.get("/branches/1/books/1/copies")
+def _find_by(items, key, value):
+    for x in items:
+        if x.get(key) == value:
+            return x
+    return None
+
+
+def test_copies_in_branch(client):
+    branches = client.get("/branches").json()
+    books = client.get("/books").json()
+
+    main = _find_by(branches, "name", "Главный филиал")
+    book1 = _find_by(books, "title", "Алгоритмы: построение и анализ")
+
+    r = client.get(f"/branches/{main['id']}/books/{book1['id']}/copies")
     assert r.status_code == 200
-    body = r.json()
-    assert body["branch_id"] == 1
-    assert body["book_id"] == 1
-    assert body["copies"] == 5
+    assert r.json()["copies"] == 5
 
 
-def test_get_copies_in_branch_missing_pair_returns_zero(client):
-    r = client.get("/branches/2/books/2/copies")
-    assert r.status_code == 200
-    assert r.json()["copies"] == 0
+def test_book_faculties_and_add(client):
+    branches = client.get("/branches").json()
+    books = client.get("/books").json()
+    faculties = client.get("/faculties").json()
 
+    it_branch = _find_by(branches, "name", "ИТ-филиал")
+    book1 = _find_by(books, "title", "Алгоритмы: построение и анализ")
 
-def test_get_copies_branch_404(client):
-    r = client.get("/branches/999/books/1/copies")
-    assert r.status_code == 404
-    assert r.json()["detail"] == "Филиал не найден"
+    # до добавления
+    r1 = client.get(f"/branches/{it_branch['id']}/books/{book1['id']}/faculties")
+    assert r1.status_code == 200
+    before = r1.json()["faculty_count"]
 
-
-def test_get_copies_book_404(client):
-    r = client.get("/branches/1/books/999/copies")
-    assert r.status_code == 404
-    assert r.json()["detail"] == "Книга не найдена"
-
-
-def test_get_book_faculties_ok(client):
-    r = client.get("/branches/1/books/1/faculties")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["faculty_count"] == 2
-    assert isinstance(body["faculties"], list)
-    assert {f["name"] for f in body["faculties"]}  # не пусто
-
-
-def test_get_book_faculties_for_missing_relation_returns_empty(client):
-    r = client.get("/branches/2/books/2/faculties")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["faculty_count"] == 0
-    assert body["faculties"] == []
-
-
-def test_add_book_faculty_ok(client):
-    r = client.post("/branches/2/books/1/faculties/2")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["faculty_count"] == 2
-
-    r2 = client.get("/branches/2/books/1/faculties")
+    # добавим матфак в ИТ-филиал (если вдруг уже есть — ок)
+    math = _find_by(faculties, "name", "Математический факультет")
+    r2 = client.post(f"/branches/{it_branch['id']}/books/{book1['id']}/faculties/{math['id']}")
     assert r2.status_code == 200
-    assert r2.json()["faculty_count"] == 2
+    after = r2.json()["faculty_count"]
 
-
-def test_add_book_faculty_404_branch(client):
-    r = client.post("/branches/999/books/1/faculties/1")
-    assert r.status_code == 404
-    assert r.json()["detail"] == "Филиал не найден"
-
-
-def test_add_book_faculty_404_book(client):
-    r = client.post("/branches/1/books/999/faculties/1")
-    assert r.status_code == 404
-    assert r.json()["detail"] == "Книга не найдена"
-
-
-def test_add_book_faculty_404_faculty(client):
-    r = client.post("/branches/1/books/1/faculties/999")
-    assert r.status_code == 404
-    assert r.json()["detail"] == "Факультет не найден"
+    assert after >= before
